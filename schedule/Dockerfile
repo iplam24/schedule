@@ -1,48 +1,50 @@
-# Stage 1: Build the application
-FROM maven:3.9-eclipse-temurin-21 AS build
+# Stage 1: Build stage
+FROM eclipse-temurin:21-jdk-jammy AS build
 
-# Set the working directory
+# Thiết lập thư mục làm việc
 WORKDIR /app
 
-# Copy the pom.xml file first to leverage Docker cache
-COPY pom.xml .
+# Copy các tệp cấu hình Maven Wrapper trước để tận dụng cache
+COPY .mvn/ .mvn/
+COPY mvnw pom.xml ./
 
-# Download dependencies - this layer will be cached unless pom.xml changes
-RUN mvn dependency:go-offline -B
+# Cấp quyền thực thi cho mvnw
+RUN chmod +x mvnw
 
-# Copy the source code
+# Tải dependencies (layer này sẽ được cache trừ khi pom.xml thay đổi)
+RUN ./mvnw dependency:go-offline -B
+
+# Copy mã nguồn
 COPY src ./src
 
-# Build the application
-RUN mvn clean package -DskipTests
+# Build ứng dụng (skip tests để build nhanh hơn, hoặc bỏ -DskipTests nếu cần)
+RUN ./mvnw clean package -DskipTests
 
-# Stage 2: Create the runtime image
-FROM eclipse-temurin:21-jre-alpine
+# Stage 2: Runtime stage
+# Sử dụng Ubuntu (Jammy) thay vì Alpine vì Playwright hỗ trợ thư viện hệ thống tốt nhất trên Ubuntu
+FROM mcr.microsoft.com/playwright:v1.49.0-jammy
 
-# Install dumb-init for proper signal handling
-RUN apk add --no-cache dumb-init
+# Thiết lập JDK 21 cho môi trường runtime (vì image Playwright gốc là Node-based)
+RUN apt-get update && apt-get install -y openjdk-21-jre-headless dumb-init && rm -rf /var/lib/apt/lists/*
 
-# Create a non-root user to run the application
-RUN addgroup -g 1000 spring && adduser -u 1000 -G spring -s /bin/sh -D spring
-
-# Set the working directory
+# Thiết lập thư mục làm việc
 WORKDIR /app
 
-# Copy the JAR file from the build stage
+# Copy tệp JAR từ stage build
 COPY --from=build /app/target/*.jar app.jar
 
-# Change ownership of the application files
+# Tạo user không phải root để bảo mật
+RUN groupadd -r spring && useradd -r -g spring spring
 RUN chown -R spring:spring /app
-
-# Switch to the non-root user
 USER spring:spring
 
-# Expose the port Spring Boot runs on
+# Cấu hình Port
 ENV PORT=8080
 EXPOSE $PORT
 
-# Use dumb-init to run the application
+# Playwright thường tải trình duyệt vào thư mục home, hãy đảm bảo app biết chỗ tìm
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
 ENTRYPOINT ["dumb-init", "--"]
 
-# Run the Spring Boot application with Java 21 optimizations
 CMD ["java", "-XX:+UseZGC", "-XX:MaxRAMPercentage=75.0", "-Dserver.port=${PORT}", "-jar", "app.jar"]
